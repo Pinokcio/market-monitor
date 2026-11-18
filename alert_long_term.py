@@ -374,7 +374,6 @@ def send_discord_message(message):
         )
 
         response.raise_for_status()
-        print("[Discord] 메시지 전송 완료")
 
     except requests.RequestException as e:
         print(f"[Discord 오류] {e}")
