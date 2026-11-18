@@ -159,31 +159,56 @@ def signal_for(key, result, state):
 # =========================================================
 # 메시지
 # =========================================================
+def to_bold(text):
+    result = ""
+    for char in str(text):
+        code = ord(char)
+
+        if 'A' <= char <= 'Z':
+            result += chr(0x1D400 + code - ord('A'))
+        elif 'a' <= char <= 'z':
+            result += chr(0x1D41A + code - ord('a'))
+        elif '0' <= char <= '9':
+            result += chr(0x1D7CE + code - ord('0'))
+        else:
+            result += char
+
+    return result
 
 def build_message(market, name, result, signal, step_delta):
     d = result["date"].strftime("%Y-%m-%d")
+    close_price = to_bold(f"{result['last']:,.2f}")
+
     lines = [
         f"[{market} 종가] {name}",
         f"기준일: {d}",
-        f"종가: {result['last']:,.2f}  ({result['day_change']:+.2f}%, 전일 대비)",
+        f"📌 종가: {close_price} ({result['day_change']:+.2f}%, 전일 대비)",
         f"252일 고점: {result['high']:,.2f} ({result['high_date'].strftime('%Y-%m-%d')})",
         f"고점 대비: {result['drawdown']:+.2f}%",
-        f"하락 단계: {result['stage']}단계 → 주식 목표 {result['target']:.0f}%",
+        f"하락 단계: {result['stage']}단계 > 주식 목표 {result['target']:.0f}%",
     ]
-
+    
     if signal == "SELL":
         sell_pct = SELL_STEP * step_delta
-        lines.append("")
-        lines.append(f"🔴 매도 신호: 칸 전체 평가금액의 {sell_pct:.0f}%p 매도")
+        lines.extend([
+            "",
+            f"🔴 매도 신호: 칸 전체 평가금액의 {sell_pct:.0f}%p 매도"
+        ])
     elif signal == "RECOVER":
-        lines.append("")
-        lines.append("🟢 회복: 목표 비중 상승. 재매수는 주 1회(금요일)에 한도 내에서 진행")
+        lines.extend([
+            "",
+            "🟢 회복: 목표 비중 상승. 재매수는 주 1회(금요일)에 한도 내에서 진행"
+        ])
     elif signal == "INIT":
-        lines.append("")
-        lines.append("ℹ️ 기준 저장 완료. 다음 실행부터 단계 변화에 따라 신호를 보냅니다.")
+        lines.extend([
+            "",
+            "ℹ️ 기준 저장 완료. 다음 실행부터 단계 변화에 따라 신호를 보냅니다."
+        ])
     else:
-        lines.append("")
-        lines.append("신호 없음 (단계 변화 없음)")
+        lines.extend([
+            "",
+            "신호 없음 (단계 변화 없음)"
+        ])
 
     return "\n".join(lines)
 
@@ -211,6 +236,7 @@ def save_tokens(tokens):
 def refresh_access_token():
     """refresh_token 으로 access_token 재발급 (refresh_token 도 갱신되면 저장)."""
     api_key = os.environ.get("KAKAO_REST_API_KEY", "")
+    client_secret = os.environ.get("KAKAO_CLIENT_SECRET")
     tokens = load_tokens()
     refresh_token = tokens.get("refresh_token") or os.environ.get("KAKAO_REFRESH_TOKEN", "")
 
@@ -222,6 +248,7 @@ def refresh_access_token():
         data={
             "grant_type": "refresh_token",
             "client_id": api_key,
+            "client_secret": client_secret,
             "refresh_token": refresh_token,
         },
         timeout=15,
@@ -281,7 +308,7 @@ def run(market, dry_run=False):
         return
 
     # 실제 신호일 때만 전송 (INIT 은 전송)
-    if signal in ("SELL", "RECOVER", "INIT"):
+    if signal in ("SELL", "RECOVER", "INIT", "HOLD"):
         send_kakao_memo(msg)
         print("카카오톡 전송 완료")
 
