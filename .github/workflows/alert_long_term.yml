@@ -50,7 +50,7 @@ jobs:
           python-version: "3.11"
 
       - name: 패키지 설치
-        run: pip install yfinance requests pandas numpy
+        run: pip install yfinance requests pandas numpy pynacl
 
       - name: 시장 결정
         id: market
