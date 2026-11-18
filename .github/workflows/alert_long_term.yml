@@ -1,0 +1,83 @@
+# GitHub Actions 워크플로 (공개 저장소용)
+# 위치: <저장소 루트>/.github/workflows/alert_long_term.yml
+#
+# 필요한 Secrets (Settings > Secrets and variables > Actions):
+#   KAKAO_REST_API_KEY   : 카카오 REST API 키
+#   KAKAO_REFRESH_TOKEN  : 카카오 refresh_token
+#
+# 스케줄(UTC 기준)
+#   40 6 * * 1-5   -> KST 15:40 (월~금) : 국장 종료 후 TIGER 나스닥100
+#   30 21 * * 1-5  -> KST 06:30 (화~토) : 미장 종료 후 SCHD
+#
+# 주의
+#   - 공개 저장소이므로 키는 절대 코드에 쓰지 말고 Secrets 에만 넣기
+#   - GitHub 스케줄은 몇 분~수십 분 늦을 수 있음
+#   - 상태 파일(alert_state.json)만 커밋해서 다음 실행에 이어 씀
+#   - 공개 저장소는 60일간 활동이 없으면 스케줄이 자동 중지될 수 있음
+
+name: alert-long-term
+
+on:
+  schedule:
+    - cron: "40 6 * * 1-5"
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      market:
+        description: "KR 또는 US"
+        required: true
+        default: "KR"
+        type: choice
+        options:
+          - KR
+          - US
+
+permissions:
+  contents: write
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install yfinance requests pandas numpy
+
+      - name: 시장 결정
+        id: market
+        run: |
+          if [ "${{ github.event.schedule }}" = "40 6 * * 1-5" ]; then
+            echo "value=KR" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 21 * * 1-5" ]; then
+            echo "value=US" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.event.inputs.market }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 알림 실행
+        env:
+          KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        run: |
+          python alert_long_term.py --market "${{ steps.market.outputs.value }}"
+
+      - name: 상태 파일 커밋 (변경된 경우만)
+        run: |
+          git config user.name "alert-bot"
+          git config user.email "alert-bot@users.noreply.github.com"
+          git add alert_state.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "update alert state"
+            git push
+          else
+            echo "상태 변화 없음"
+          fi
