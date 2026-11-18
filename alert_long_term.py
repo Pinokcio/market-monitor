@@ -353,6 +353,33 @@ def update_github_secret(new_refresh_token):
     print("GitHub KAKAO_REFRESH_TOKEN Secret 업데이트 완료")
 
 
+def send_discord_message(message):
+    """Discord Webhook으로 투자 알림 전송."""
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+    if not webhook_url:
+        print("[Discord] Webhook URL이 없습니다.")
+        return
+
+    try:
+        response = requests.post(
+            webhook_url,
+            json={
+                "content": message,
+                "allowed_mentions": {
+                    "parse": []
+                }
+            },
+            timeout=15,
+        )
+
+        response.raise_for_status()
+        print("[Discord] 메시지 전송 완료")
+
+    except requests.RequestException as e:
+        print(f"[Discord 오류] {e}")
+
+
 def send_kakao_memo(text):
     access_token = refresh_access_token()
 
@@ -401,6 +428,9 @@ def run(market, dry_run=False):
     if signal in ("SELL", "RECOVER", "INIT", "HOLD"):
         send_kakao_memo(msg)
         print("카카오톡 전송 완료")
+
+        send_discord_message(msg)
+        print("디스코드 전송 완료")
 
     state[key] = {
         "stage": result["stage"],
