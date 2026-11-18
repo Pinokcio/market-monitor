@@ -187,7 +187,7 @@ def build_message(market, name, result, signal, step_delta):
         f"고점 대비: {result['drawdown']:+.2f}%",
         f"하락 단계: {result['stage']}단계 > 주식 목표 {result['target']:.0f}%",
     ]
-    
+
     if signal == "SELL":
         sell_pct = SELL_STEP * step_delta
         lines.extend([
@@ -218,30 +218,47 @@ def build_message(market, name, result, signal, step_delta):
 # =========================================================
 
 def load_tokens():
+    env_refresh_token = os.environ.get("KAKAO_REFRESH_TOKEN", "")
+
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return {
+            "refresh_token": env_refresh_token,
+            "access_token": "",
+        }
+
     if TOKEN_FILE.exists():
         return json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+
     return {
-        "refresh_token": os.environ.get("KAKAO_REFRESH_TOKEN", ""),
+        "refresh_token": env_refresh_token,
         "access_token": "",
     }
 
 
 def save_tokens(tokens):
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+
     TOKEN_FILE.write_text(
         json.dumps(tokens, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-
 def refresh_access_token():
-    """refresh_token 으로 access_token 재발급 (refresh_token 도 갱신되면 저장)."""
+    """Refresh Token으로 Access Token 재발급 및 GitHub Secret 동기화."""
     api_key = os.environ.get("KAKAO_REST_API_KEY", "")
-    client_secret = os.environ.get("KAKAO_CLIENT_SECRET")
+    client_secret = os.environ.get("KAKAO_CLIENT_SECRET", "")
     tokens = load_tokens()
-    refresh_token = tokens.get("refresh_token") or os.environ.get("KAKAO_REFRESH_TOKEN", "")
+
+    refresh_token = (
+        tokens.get("refresh_token")
+        or os.environ.get("KAKAO_REFRESH_TOKEN", "")
+    )
 
     if not api_key or not refresh_token:
-        raise RuntimeError("KAKAO_REST_API_KEY 또는 KAKAO_REFRESH_TOKEN 이 없습니다.")
+        raise RuntimeError(
+            "KAKAO_REST_API_KEY 또는 KAKAO_REFRESH_TOKEN이 없습니다."
+        )
 
     res = requests.post(
         KAKAO_TOKEN_URL,
@@ -253,14 +270,87 @@ def refresh_access_token():
         },
         timeout=15,
     )
-    res.raise_for_status()
     body = res.json()
 
+    if not res.ok:
+        raise RuntimeError(
+            f"Kakao token refresh failed: "
+            f"HTTP {res.status_code}, "
+            f"error={body.get('error')}, "
+            f"description={body.get('error_description')}, "
+            f"error_code={body.get('error_code')}"
+        )
+
     tokens["access_token"] = body["access_token"]
-    if "refresh_token" in body:  # 만료가 가까우면 새 refresh_token 이 옴
-        tokens["refresh_token"] = body["refresh_token"]
-    save_tokens(tokens)
+
+    new_refresh_token = body.get("refresh_token")
+
+    if new_refresh_token:
+        tokens["refresh_token"] = new_refresh_token
+        save_tokens(tokens)
+
+        print("[토큰] 새로운 Refresh Token 감지")
+
+        # GitHub Actions에서만 GitHub Secret 갱신
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            update_github_secret(new_refresh_token)
+    else:
+        save_tokens(tokens)
+        print("[토큰] 새로운 Refresh Token 없음. 기존 토큰 유지")
+
     return tokens["access_token"]
+
+
+def update_github_secret(new_refresh_token):
+    """GitHub Repository Secret의 Refresh Token 갱신."""
+    import base64
+    import nacl.public
+
+    github_token = os.environ.get("GH_TOKEN", "")
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+
+    if not github_token or not repository:
+        raise RuntimeError("GitHub Secret 갱신에 필요한 환경변수가 없습니다.")
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    base_url = f"https://api.github.com/repos/{repository}/actions/secrets"
+
+    # Repository 공개키 조회
+    key_res = requests.get(
+        f"{base_url}/public-key",
+        headers=headers,
+        timeout=15,
+    )
+    key_res.raise_for_status()
+    key_data = key_res.json()
+
+    # GitHub 공개키로 Secret 암호화
+    public_key = nacl.public.PublicKey(
+        base64.b64decode(key_data["key"])
+    )
+    sealed_box = nacl.public.SealedBox(public_key)
+    encrypted_value = base64.b64encode(
+        sealed_box.encrypt(new_refresh_token.encode("utf-8"))
+    ).decode("utf-8")
+
+    # Repository Secret 갱신
+    update_res = requests.put(
+        f"{base_url}/KAKAO_REFRESH_TOKEN",
+        headers=headers,
+        json={
+            "encrypted_value": encrypted_value,
+            "key_id": key_data["key_id"],
+        },
+        timeout=15,
+    )
+    update_res.raise_for_status()
+
+    print("GitHub KAKAO_REFRESH_TOKEN Secret 업데이트 완료")
 
 
 def send_kakao_memo(text):
