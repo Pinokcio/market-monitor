@@ -425,8 +425,8 @@ def run(market, dry_run=False):
 
     # 실제 신호일 때만 전송 (INIT 은 전송)
     if signal in ("SELL", "RECOVER", "INIT", "HOLD"):
-        send_kakao_memo(msg)
-        print("카카오톡 전송 완료")
+        # send_kakao_memo(msg)
+        # print("카카오톡 전송 완료")
 
         send_discord_message(msg)
         print("디스코드 전송 완료")
