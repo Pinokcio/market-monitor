@@ -17,9 +17,6 @@
   python alert_long_term.py --market US            # 미장 종료 후
   python alert_long_term.py --market KR --dry-run  # 전송 없이 메시지만 출력
 
-카카오 설정
-  환경변수 KAKAO_REST_API_KEY, KAKAO_REFRESH_TOKEN 이 필요합니다.
-  (토큰 발급 방법은 파일 하단 주석 참고)
 """
 
 import argparse
@@ -50,11 +47,6 @@ SELL_STEP = 15.0         # 단계당 축소 비중 (%p)
 MAX_STAGE = 7            # -35% 이상이면 0%
 
 STATE_FILE = Path(__file__).with_name("alert_state.json")
-TOKEN_FILE = Path(__file__).with_name("kakao_tokens.json")
-
-KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
-KAKAO_SEND_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
-
 
 # =========================================================
 # 데이터
@@ -212,147 +204,6 @@ def build_message(market, name, result, signal, step_delta):
 
     return "\n".join(lines)
 
-
-# =========================================================
-# 카카오톡 나에게 보내기
-# =========================================================
-
-def load_tokens():
-    env_refresh_token = os.environ.get("KAKAO_REFRESH_TOKEN", "")
-
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        return {
-            "refresh_token": env_refresh_token,
-            "access_token": "",
-        }
-
-    if TOKEN_FILE.exists():
-        return json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-
-    return {
-        "refresh_token": env_refresh_token,
-        "access_token": "",
-    }
-
-
-def save_tokens(tokens):
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        return
-
-    TOKEN_FILE.write_text(
-        json.dumps(tokens, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-def refresh_access_token():
-    """Refresh Token으로 Access Token 재발급 및 GitHub Secret 동기화."""
-    api_key = os.environ.get("KAKAO_REST_API_KEY", "")
-    client_secret = os.environ.get("KAKAO_CLIENT_SECRET", "")
-    tokens = load_tokens()
-
-    refresh_token = (
-        tokens.get("refresh_token")
-        or os.environ.get("KAKAO_REFRESH_TOKEN", "")
-    )
-
-    if not api_key or not refresh_token:
-        raise RuntimeError(
-            "KAKAO_REST_API_KEY 또는 KAKAO_REFRESH_TOKEN이 없습니다."
-        )
-
-    res = requests.post(
-        KAKAO_TOKEN_URL,
-        data={
-            "grant_type": "refresh_token",
-            "client_id": api_key,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-        },
-        timeout=15,
-    )
-    body = res.json()
-
-    if not res.ok:
-        raise RuntimeError(
-            f"Kakao token refresh failed: "
-            f"HTTP {res.status_code}, "
-            f"error={body.get('error')}, "
-            f"description={body.get('error_description')}, "
-            f"error_code={body.get('error_code')}"
-        )
-
-    tokens["access_token"] = body["access_token"]
-
-    new_refresh_token = body.get("refresh_token")
-
-    if new_refresh_token:
-        tokens["refresh_token"] = new_refresh_token
-        save_tokens(tokens)
-
-        print("[토큰] 새로운 Refresh Token 감지")
-
-        # GitHub Actions에서만 GitHub Secret 갱신
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            update_github_secret(new_refresh_token)
-    else:
-        save_tokens(tokens)
-        print("[토큰] 새로운 Refresh Token 없음. 기존 토큰 유지")
-
-    return tokens["access_token"]
-
-
-def update_github_secret(new_refresh_token):
-    """GitHub Repository Secret의 Refresh Token 갱신."""
-    import base64
-    import nacl.public
-
-    github_token = os.environ.get("GH_TOKEN", "")
-    repository = os.environ.get("GITHUB_REPOSITORY", "")
-
-    if not github_token or not repository:
-        raise RuntimeError("GitHub Secret 갱신에 필요한 환경변수가 없습니다.")
-
-    headers = {
-        "Authorization": f"Bearer {github_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    base_url = f"https://api.github.com/repos/{repository}/actions/secrets"
-
-    # Repository 공개키 조회
-    key_res = requests.get(
-        f"{base_url}/public-key",
-        headers=headers,
-        timeout=15,
-    )
-    key_res.raise_for_status()
-    key_data = key_res.json()
-
-    # GitHub 공개키로 Secret 암호화
-    public_key = nacl.public.PublicKey(
-        base64.b64decode(key_data["key"])
-    )
-    sealed_box = nacl.public.SealedBox(public_key)
-    encrypted_value = base64.b64encode(
-        sealed_box.encrypt(new_refresh_token.encode("utf-8"))
-    ).decode("utf-8")
-
-    # Repository Secret 갱신
-    update_res = requests.put(
-        f"{base_url}/KAKAO_REFRESH_TOKEN",
-        headers=headers,
-        json={
-            "encrypted_value": encrypted_value,
-            "key_id": key_data["key_id"],
-        },
-        timeout=15,
-    )
-    update_res.raise_for_status()
-
-    print("GitHub KAKAO_REFRESH_TOKEN Secret 업데이트 완료")
-
-
 def send_discord_message(message):
     """Discord Webhook으로 투자 알림 전송."""
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -379,29 +230,6 @@ def send_discord_message(message):
         print(f"[Discord 오류] {e}")
 
 
-def send_kakao_memo(text):
-    access_token = refresh_access_token()
-
-    template = {
-        "object_type": "text",
-        "text": text[:1900],  # 카카오 텍스트 길이 제한 여유
-        "link": {
-            "web_url": "https://finance.yahoo.com",
-            "mobile_web_url": "https://finance.yahoo.com",
-        },
-        "button_title": "확인",
-    }
-
-    res = requests.post(
-        KAKAO_SEND_URL,
-        headers={"Authorization": f"Bearer {access_token}"},
-        data={"template_object": json.dumps(template, ensure_ascii=False)},
-        timeout=15,
-    )
-    res.raise_for_status()
-    return res.json()
-
-
 # =========================================================
 # 메인
 # =========================================================
@@ -425,9 +253,6 @@ def run(market, dry_run=False):
 
     # 실제 신호일 때만 전송 (INIT 은 전송)
     if signal in ("SELL", "RECOVER", "INIT", "HOLD"):
-        # send_kakao_memo(msg)
-        # print("카카오톡 전송 완료")
-
         send_discord_message(msg)
         print("디스코드 전송 완료")
 
@@ -456,19 +281,6 @@ if __name__ == "__main__":
 
 
 # =========================================================
-# 카카오 토큰 발급 (최초 1회)
-# 1) https://developers.kakao.com 에서 앱 생성 → REST API 키 확인
-# 2) 카카오 로그인 활성화, Redirect URI 등록 (예: https://localhost)
-# 3) 동의항목에서 "talk_message"(카카오톡 메시지 전송) 추가
-# 4) 브라우저에서 아래 주소로 인가 코드 발급
-#    https://kauth.kakao.com/oauth/authorize?client_id=REST_API_KEY&redirect_uri=https://localhost&response_type=code&scope=talk_message
-# 5) 받은 code 로 토큰 발급
-#    curl -X POST https://kauth.kakao.com/oauth/token \
-#      -d grant_type=authorization_code -d client_id=REST_API_KEY \
-#      -d redirect_uri=https://localhost -d code=CODE
-# 6) 응답의 refresh_token 을 환경변수 KAKAO_REFRESH_TOKEN 에 넣기
-#    export KAKAO_REST_API_KEY=... ; export KAKAO_REFRESH_TOKEN=...
-#
 # 스케줄 (macOS crontab, 한국시간 기준)
 #   40 15 * * 1-5  cd /Users/lotte/Documents/test_rec_model && python alert_long_term.py --market KR
 #   30 6  * * 2-6  cd /Users/lotte/Documents/test_rec_model && python alert_long_term.py --market US
